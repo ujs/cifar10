@@ -29,7 +29,16 @@ import numpy as np
 import os, shutil
 import matplotlib.pyplot as plt
 from matplotlib.image import imread
-#original_train_set = '../input/cifar-10/train'
+import keras
+from sklearn.model_selection import train_test_split
+from keras import backend
+from keras.preprocessing.image import ImageDataGenerator
+from keras.models import Sequential, Model
+from keras import layers
+from keras import backend
+from keras import Input
+from keras.preprocessing import image
+original_train_set = '/content/'
 original_train_labels = 'trainLabels.csv'
 
 #reading labels csv into python and parsing
@@ -74,10 +83,131 @@ for i in range(1,10):
     plt.imshow(image)
 plt.show()
 
-# Mapping train images to labels in trainLabels
+# Another way to convert csv to data frame
 from pandas import read_csv
 
 filename = 'trainLabels.csv'
-map_csv = read_csv(filename)
-print(map_csv.shape)
+map_csv = pd.read_csv(filename)
+map_csv.head()
 
+map_csv.label.iloc[0]
+
+# Map categorical labels to integer using dictionaries
+
+def create_label_map(map_csv):
+  '''Function to map class labels to integers and vice versa'''
+  #extracting set of unique labels, converting to sorted list. In this case there are 10 unique labels
+  labels = list(map_csv.label.unique())
+  labels.sort()
+  #forward map
+  labels_map = {labels[i]:i for i in range(len(labels))}
+  #Inverse map
+  inv_labels_map = {i:labels[i] for i in range(len(labels))}
+  return labels_map, inv_labels_map
+
+# Map all image file names to labels. Hash tables will taking constant time for retrieval
+def create_file_map(map_csv):
+  mapping = dict()
+
+  for i in range(len(map_csv)):
+    name, label = map_csv.id.iloc[i], map_csv.label.iloc[i]
+    mapping[name] = label
+  return mapping
+
+#calling the funciton
+label_dict = create_file_map(map_csv)
+label_dict[10]
+
+#Let's call the above function
+mapping, inv_mapping = create_label_map(map_csv)
+print(len(mapping))
+print(inv_mapping)
+
+#One hot encoding representation of image label
+def one_hot_encode(label, mapping):
+  '''First input is label of the given image. Second input is label to integer map dictionary. Output is one hot encoded representation for the image label '''
+  encoding = np.zeros(len(mapping), dtype = 'uint8')
+  encoding[mapping[label]] = 1
+  return encoding
+  
+#test the function
+one_hot_encode('cat', mapping)
+
+for pth, dirs, files in os.walk('/content/'):
+  print ('path: ', pth)
+  print('dir: ', dirs)
+  #print('file: ', files)
+
+  #for f in files:
+     #print(f)
+
+# load all images into memory
+def load_dataset(folder, label_dict, mapping):
+  photos, targets = list(), list()
+  # enumerate files in the directory
+  filenames = [f for f in os.listdir(folder) if os.path.isfile(os.path.join(folder,f)) and f[-3:] == 'png']
+  for filename in filenames:
+    # load image
+    photo = image.load_img(filename, target_size=(32,32))
+    # convert to numpy array
+    photo = image.img_to_array(photo, dtype='uint8')
+    # get labels for each image
+    label_num = int(filename.split('.')[0])
+    label = label_dict[label_num]
+    # one hot encoded represenation of label
+    target = one_hot_encode(label, mapping)
+    # store
+    photos.append(photo)
+    targets.append(target)
+  X = np.asarray(photos, dtype='uint8')
+  y = np.asarray(targets, dtype='uint8')
+  return X, y
+
+#testing function
+folder = '/content/'
+result = load_dataset(folder, label_dict, mapping)
+
+#Saving X,y in a compressed file
+np.savez_compressed('cifar.npz',result[0],result[1])
+
+
+# load prepared planet dataset
+from numpy import load
+data = load('cifar.npz')
+X, y = data['arr_0'], data['arr_1']
+print('Loaded: ', X.shape, y.shape)
+
+# Defining Baseline Model Architechture
+def define_model(input_shape = (32,32,3), output_shape = 10):
+  input_tensor = Input(shape = input_shape)
+  x = layers.Conv2D(32,(3,3), activation = 'relu', padding = 'same')(input_tensor)
+  x = layers.Conv2D(32, (3, 3), activation='relu', padding='same')(x)
+  x = layers.MaxPooling2D((2, 2))(x)
+  x = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(x)
+  x = layers.Conv2D(64, (3, 3), activation='relu', kernel_initializer='he_uniform', padding='same')(x)
+  x = layers.MaxPooling2D((2, 2))(x)
+  x = layers.Conv2D(128, (3, 3), activation='relu', kernel_initializer='he_uniform', padding='same')(x)
+  x = layers.Conv2D(128, (3, 3), activation='relu', kernel_initializer='he_uniform', padding='same')(x)
+  x = layers.MaxPooling2D((2, 2))(x)
+  x = layers.Flatten()(x)
+  x = layers.Dense(128, activation='relu', kernel_initializer='he_uniform')(x)
+  output_tensor = layers.Dense(output_shape, activation='sigmoid')(x)
+  model = Model(input_tensor, output_tensor)
+
+  # compilation
+  model.compile(optimizer='rmsprop', loss='categorical_crossentropy', metrics=['accuracy'])
+  return model, model.summary()
+
+#test function
+define_model(input_shape = (32,32,3), output_shape = 10)
+
+#Split data into train, validation, and test set
+trainX, testX, trainY, testY = train_test_split(X, y, test_size=0.2, random_state=1)
+trainX, valX, trainY, valY = train_test_split(X, y, test_size=0.25, random_state=1)
+
+#using ImageDataGenerator for random sampling and data normalization, augmentation
+train_datagen = ImageDataGenerator(rescale = 1./255, horizontal_flip=True, vertical_flip=True, rotation_range=90)
+val_datagen = ImageDataGenerator(rescale = 1./255)
+
+train_generator = train_datagen.flow(trainX,trainY, batch_size = 128)
+val_generator = train_datagen.flow(valX,valY, batch_size = 128)
